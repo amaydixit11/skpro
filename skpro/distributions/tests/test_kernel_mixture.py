@@ -377,7 +377,7 @@ class TestKernelMixture:
         assert len(km._support[0]) == 3
         assert len(km._support[1]) == 4
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_mean_per_location(self, mode):
         """Mean for each row equals the weighted average of that row's support."""
         km = _km_2d() if mode == "2d" else _km_ragged()
@@ -388,7 +388,7 @@ class TestKernelMixture:
         expected_row1 = 6.0 if mode == "2d" else 6.5
         assert abs(means.iloc[1, 0] - expected_row1) < 1e-10
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_var_per_location_positive(self, mode):
         """Variance is positive and finite for each location."""
         km = _km_2d() if mode == "2d" else _km_ragged()
@@ -409,7 +409,7 @@ class TestKernelMixture:
         expected_var0 = h**2 * kernel_var_gaussian + np.mean((sup0 - mu0) ** 2)
         assert abs(variances.iloc[0, 0] - expected_var0) < 1e-10
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_pdf_positive_at_support_center(self, mode):
         """PDF should be positive at the center of each location's support."""
         km = _km_2d() if mode == "2d" else _km_ragged()
@@ -418,7 +418,7 @@ class TestKernelMixture:
         pdf_vals = km.pdf(x)
         assert np.all(pdf_vals.values > 0)
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_pdf_near_zero_far_from_support(self, mode):
         """PDF should be near zero far from either location's support."""
         km = _km_2d() if mode == "2d" else _km_ragged()
@@ -427,7 +427,7 @@ class TestKernelMixture:
         pdf_vals = km.pdf(x)
         assert np.all(pdf_vals.values < 1e-6)
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_pdf_integrates_per_row(self, mode):
         """Each row's marginal PDF integrates to ~1."""
         km = _km_2d() if mode == "2d" else _km_ragged()
@@ -453,7 +453,7 @@ class TestKernelMixture:
                 f"Row {row_i} PDF integral = {integral:.4f}, expected ~1.0"
             )
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_cdf_monotone_per_row(self, mode):
         """Each row's CDF is non-decreasing."""
         km = _km_2d() if mode == "2d" else _km_ragged()
@@ -471,21 +471,21 @@ class TestKernelMixture:
                 f"CDF non-monotone for row {row_i}"
             )
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_sample_shape(self, mode):
         """Single draw has shape (n_rows, n_cols)."""
         km = _km_2d() if mode == "2d" else _km_ragged()
         s = km.sample()
         assert s.shape == (2, 1)
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_sample_multi_shape(self, mode):
         """n_samples draws has shape (n_samples * n_rows, n_cols)."""
         km = _km_2d() if mode == "2d" else _km_ragged()
         s = km.sample(5)
         assert s.shape == (10, 1)
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_sample_row0_near_support0(self, mode):
         """Samples for row 0 should cluster near [0, 1, 2]."""
         km = _km_2d() if mode == "2d" else _km_ragged()
@@ -494,7 +494,7 @@ class TestKernelMixture:
         row0_vals = s.xs(0, level=1).values.ravel()
         assert row0_vals.mean() < 4.0  # nowhere near [5-8]
 
-    @pytest.mark.parametrize("mode", ["2d"])
+    @pytest.mark.parametrize("mode", ["2d", "ragged"])
     def test_sample_row1_near_support1(self, mode):
         """Samples for row 1 should cluster near [5, 6, 7] or [5-8]."""
         km = _km_2d() if mode == "2d" else _km_ragged()
@@ -593,7 +593,10 @@ class TestKernelMixture:
 
     def test_iat_returns_scalar_km_2d(self):
         """_iat on a 2-D KernelMixture returns a scalar KernelMixture."""
-        pass # TODO
+        km = _km_2d()
+        scalar_km = km._iat(0, 0)
+        assert scalar_km.ndim == 0
+        assert abs(scalar_km.mean() - 1.0) < 1e-10  # row 0 mean
 
     def test_shared_support_unchanged(self):
         """Existing 1-D shared-support API is completely unchanged."""
