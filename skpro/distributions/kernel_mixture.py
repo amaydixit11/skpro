@@ -238,6 +238,18 @@ class KernelMixture(BaseDistribution):
         self._bandwidth = self._parse_bandwidth(bandwidth, self._support_mode)
         self._weights = self._parse_weights(weights, self._support_mode)
 
+        if self._support_mode != "shared" and index is not None:
+            n_rows = (
+                len(self._support)
+                if self._support_mode == "per_location_ragged"
+                else self._support.shape[0]
+            )
+            if n_rows != len(index):
+                raise ValueError(
+                    f"Number of support rows ({n_rows}) must match "
+                    f"length of index ({len(index)})."
+                )
+
         super().__init__(index=index, columns=columns)
 
     @staticmethod
@@ -382,6 +394,12 @@ class KernelMixture(BaseDistribution):
                 "support (2-D array or list of 1-D arrays)."
             )
 
+        if w_arr is not None and w_arr.ndim == 0:
+            raise ValueError(
+                "Scalar weights are not supported with per-location support. "
+                "Provide weights with the same shape as support."
+            )
+
         # Treat as a list of 1-D weight arrays (ragged compatible)
         w_list = (
             weights if isinstance(weights, list)
@@ -392,9 +410,7 @@ class KernelMixture(BaseDistribution):
 
     def _bw_for(self, loc_idx=None):
         """Return bandwidth for location ``loc_idx`` (or scalar if shared)."""
-        if np.isscalar(self._bandwidth):
-            return self._bandwidth
-        return self._bandwidth[loc_idx]
+        raise NotImplementedError("TODO")
 
     def _support_for(self, loc_idx):
         """Return 1-D support array for location index ``loc_idx``."""
@@ -406,9 +422,7 @@ class KernelMixture(BaseDistribution):
 
     def _weights_for(self, loc_idx):
         """Return 1-D weight array for location index ``loc_idx``."""
-        if self._support_mode == "shared":
-            return self._weights
-        return self._weights[loc_idx]
+        raise NotImplementedError("TODO")
 
     def _kernel_pdf(self, u):
         """Evaluate kernel pdf K(u), vectorized."""
@@ -578,18 +592,7 @@ class KernelMixture(BaseDistribution):
 
     def _pdf_shared(self, x):
         """PDF evaluation for shared-support mode (original logic)."""
-        h = self._bandwidth
-        support = self._support
-        weights = self._weights
-        if self.ndim == 0:
-            x_val = float(x)
-            u = (x_val - support) / h
-            return np.sum(weights * self._kernel_pdf(u)) / h
-        x_flat = x.ravel()
-        u = (x_flat[:, None] - support[None, :]) / h
-        K = self._kernel_pdf(u)
-        pdf_flat = np.sum(weights[None, :] * K, axis=1) / h
-        return pdf_flat.reshape(x.shape)
+        raise NotImplementedError("TODO")
 
     def _pdf_per_location(self, x):
         """PDF evaluation for per-location modes (2-D or ragged support)."""
@@ -608,9 +611,7 @@ class KernelMixture(BaseDistribution):
 
     def _pdf(self, x):
         """Probability density function."""
-        if self._support_mode == "shared":
-            return self._pdf_shared(x)
-        return self._pdf_per_location(x)
+        raise NotImplementedError("TODO")
 
     def _log_pdf(self, x):
         """Logarithmic probability density function."""
@@ -652,9 +653,7 @@ class KernelMixture(BaseDistribution):
 
     def _cdf(self, x):
         """Cumulative distribution function."""
-        if self._support_mode == "shared":
-            return self._cdf_shared(x)
-        return self._cdf_per_location(x)
+        raise NotImplementedError("TODO")
 
     def _sample_shared(self, n_samples):
         """Sampling for shared-support mode (original logic)."""
@@ -723,80 +722,15 @@ class KernelMixture(BaseDistribution):
 
     def _sample(self, n_samples=None):
         """Sample from the distribution."""
-        if self._support_mode == "shared":
-            return self._sample_shared(n_samples)
-        return self._sample_per_location(n_samples)
+        raise NotImplementedError("TODO")
 
     def _iloc(self, rowidx=None, colidx=None):
         """Subset distribution by integer row/column indices."""
-        from skpro.distributions.base._base import is_scalar_notnone
-
-        if is_scalar_notnone(rowidx) and is_scalar_notnone(colidx):
-            return self._iat(rowidx, colidx)
-        if is_scalar_notnone(rowidx):
-            rowidx = pd.Index([rowidx])
-        if is_scalar_notnone(colidx):
-            colidx = pd.Index([colidx])
-
-        index = self.index
-        columns = self.columns
-        index_subset = index.take(rowidx) if rowidx is not None else index
-        columns_subset = (
-            columns.take(colidx) if colidx is not None else columns
-        )
-
-        # For per-location modes, slice the support/weights along rows
-        if self._support_mode == "shared" or rowidx is None:
-            sub_support = self.support
-            sub_weights = self.weights
-        elif self._support_mode == "per_location_2d":
-            row_positions = (
-                rowidx
-                if isinstance(rowidx, (list, np.ndarray))
-                else list(rowidx)
-            )
-            sub_support = self._support[row_positions]  # 2-D slice
-            sub_weights = (
-                [self._weights[i] for i in row_positions]
-                if isinstance(self._weights, list)
-                else self._weights[row_positions]
-            )
-        else:  # ragged
-            row_positions = (
-                rowidx
-                if isinstance(rowidx, (list, np.ndarray))
-                else list(rowidx)
-            )
-            sub_support = [self._support[i] for i in row_positions]
-            sub_weights = [self._weights[i] for i in row_positions]
-
-        return KernelMixture(
-            support=sub_support,
-            bandwidth=self.bandwidth,
-            kernel=self.kernel,
-            weights=sub_weights,
-            random_state=self.random_state,
-            index=index_subset,
-            columns=columns_subset,
-        )
+        raise NotImplementedError("TODO")
 
     def _iat(self, rowidx=None, colidx=None):
         """Subset distribution to a single scalar element."""
-        if self._support_mode == "shared":
-            sub_support = self.support
-            sub_weights = self.weights
-        else:
-            sub_support = self._support_for(rowidx)
-            sub_weights = self._weights_for(rowidx)
-        return KernelMixture(
-            support=sub_support,
-            bandwidth=self.bandwidth,
-            kernel=self.kernel,
-            weights=sub_weights,
-            random_state=self.random_state,
-        )
-
-    @classmethod
+        raise NotImplementedError("TODO")
     def get_test_params(cls, parameter_set="default"):
         """Return testing parameter settings for the estimator."""
         params1 = {
