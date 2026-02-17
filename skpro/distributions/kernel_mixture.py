@@ -410,7 +410,9 @@ class KernelMixture(BaseDistribution):
 
     def _bw_for(self, loc_idx=None):
         """Return bandwidth for location ``loc_idx`` (or scalar if shared)."""
-        raise NotImplementedError("TODO")
+        if np.isscalar(self._bandwidth):
+            return self._bandwidth
+        return self._bandwidth[loc_idx]
 
     def _support_for(self, loc_idx):
         """Return 1-D support array for location index ``loc_idx``."""
@@ -422,7 +424,9 @@ class KernelMixture(BaseDistribution):
 
     def _weights_for(self, loc_idx):
         """Return 1-D weight array for location index ``loc_idx``."""
-        raise NotImplementedError("TODO")
+        if self._support_mode == "shared":
+            return self._weights
+        return self._weights[loc_idx]
 
     def _kernel_pdf(self, u):
         """Evaluate kernel pdf K(u), vectorized."""
@@ -592,7 +596,18 @@ class KernelMixture(BaseDistribution):
 
     def _pdf_shared(self, x):
         """PDF evaluation for shared-support mode (original logic)."""
-        raise NotImplementedError("TODO")
+        h = self._bandwidth
+        support = self._support
+        weights = self._weights
+        if self.ndim == 0:
+            x_val = float(x)
+            u = (x_val - support) / h
+            return np.sum(weights * self._kernel_pdf(u)) / h
+        x_flat = x.ravel()
+        u = (x_flat[:, None] - support[None, :]) / h
+        K = self._kernel_pdf(u)
+        pdf_flat = np.sum(weights[None, :] * K, axis=1) / h
+        return pdf_flat.reshape(x.shape)
 
     def _pdf_per_location(self, x):
         """PDF evaluation for per-location modes (2-D or ragged support)."""
@@ -611,7 +626,9 @@ class KernelMixture(BaseDistribution):
 
     def _pdf(self, x):
         """Probability density function."""
-        raise NotImplementedError("TODO")
+        if self._support_mode == "shared":
+            return self._pdf_shared(x)
+        return self._pdf_per_location(x)
 
     def _log_pdf(self, x):
         """Logarithmic probability density function."""
@@ -653,7 +670,9 @@ class KernelMixture(BaseDistribution):
 
     def _cdf(self, x):
         """Cumulative distribution function."""
-        raise NotImplementedError("TODO")
+        if self._support_mode == "shared":
+            return self._cdf_shared(x)
+        return self._cdf_per_location(x)
 
     def _sample_shared(self, n_samples):
         """Sampling for shared-support mode (original logic)."""
