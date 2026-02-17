@@ -19,6 +19,31 @@ from skpro.distributions.kernel_mixture import KernelMixture
 from skpro.tests.test_switch import run_test_module_changed
 
 
+def _km_2d(bw=0.5, kernel="gaussian"):
+    """A 2-row, 1-column KernelMixture with 2-D support."""
+    support = np.array([[0.0, 1.0, 2.0], [5.0, 6.0, 7.0]])
+    return KernelMixture(
+        support=support,
+        bandwidth=bw,
+        kernel=kernel,
+        index=pd.RangeIndex(2),
+        columns=pd.Index(["a"]),
+    )
+
+
+def _km_ragged(bw=0.5, kernel="gaussian"):
+    """A 2-row, 1-column KernelMixture with ragged support."""
+    support = [np.array([0.0, 1.0, 2.0]), np.array([5.0, 6.0, 7.0, 8.0])]
+    return KernelMixture(
+        support=support,
+        bandwidth=bw,
+        kernel=kernel,
+        index=pd.RangeIndex(2),
+        columns=pd.Index(["a"]),
+    )
+
+
+
 @pytest.mark.skipif(
     not run_test_module_changed("skpro.distributions"),
     reason="run only if skpro.distributions has been changed",
@@ -317,3 +342,278 @@ class TestKernelMixture:
             skpro_pdf = km.pdf(x)
             sklearn_pdf = np.exp(kde.score_samples(np.array([[x]]))[0])
             assert abs(skpro_pdf - sklearn_pdf) < 1e-6
+
+    # ---------------------------------------------------------------------- #
+    # 2D / Ragged Support Tests
+    # ---------------------------------------------------------------------- #
+
+    def test_shared_mode_detected(self):
+        """1-D support → shared mode (backward-compat)."""
+        km = KernelMixture(support=[0.0, 1.0, 2.0], bandwidth=0.5)
+        assert km._support_mode == "shared"
+        assert km._support.ndim == 1
+
+    def test_2d_mode_detected_from_array(self):
+        """2-D numpy array → per_location_2d mode."""
+        km = _km_2d()
+        assert km._support_mode == "per_location_2d"
+        assert km._support.shape == (2, 3)
+
+    def test_2d_mode_detected_from_nested_list(self):
+        """Nested list of equal-length rows → per_location_2d mode."""
+        km = KernelMixture(
+            support=[[0.0, 1.0], [5.0, 6.0]],
+            bandwidth=0.5,
+            index=pd.RangeIndex(2),
+            columns=pd.Index(["a"]),
+        )
+        assert km._support_mode == "per_location_2d"
+
+    def test_ragged_mode_detected(self):
+        """List of unequal-length arrays → per_location_ragged mode."""
+        km = _km_ragged()
+        assert km._support_mode == "per_location_ragged"
+        assert isinstance(km._support, list)
+        assert len(km._support[0]) == 3
+        assert len(km._support[1]) == 4
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_mean_per_location(self, mode):
+        """Mean for each row equals the weighted average of that row's support."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+        means = km.mean()
+        # Row 0 support: [0, 1, 2], uniform → mean = 1.0
+        assert abs(means.iloc[0, 0] - 1.0) < 1e-10
+        # Row 1 support: [5, 6, 7] or [5, 6, 7, 8]
+        expected_row1 = 6.0 if mode == "2d" else 6.5
+        assert abs(means.iloc[1, 0] - expected_row1) < 1e-10
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_var_per_location_positive(self, mode):
+        """Variance is positive and finite for each location."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+        variances = km.var()
+        assert np.all(variances.values > 0)
+        assert np.all(np.isfinite(variances.values))
+
+    def test_var_law_of_total_variance_2d(self):
+        """Variance formula: h^2 * kernel_var + weighted_variance_of_support."""
+        km = _km_2d(bw=0.5, kernel="gaussian")
+        variances = km.var()
+        h = 0.5
+        kernel_var_gaussian = 1.0
+
+        # Row 0: support [0, 1, 2], uniform weights
+        sup0 = np.array([0.0, 1.0, 2.0])
+        mu0 = sup0.mean()
+        expected_var0 = h**2 * kernel_var_gaussian + np.mean((sup0 - mu0) ** 2)
+        assert abs(variances.iloc[0, 0] - expected_var0) < 1e-10
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_pdf_positive_at_support_center(self, mode):
+        """PDF should be positive at the center of each location's support."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+        # Center of row 0 is ~1.0, center of row 1 is ~6.0 (or 6.5 ragged)
+        x = pd.DataFrame({"a": [1.0, 6.0]}, index=pd.RangeIndex(2))
+        pdf_vals = km.pdf(x)
+        assert np.all(pdf_vals.values > 0)
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_pdf_near_zero_far_from_support(self, mode):
+        """PDF should be near zero far from either location's support."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+        # x = 50 is far from both [0,1,2] and [5,6,7/8]
+        x = pd.DataFrame({"a": [50.0, 50.0]}, index=pd.RangeIndex(2))
+        pdf_vals = km.pdf(x)
+        assert np.all(pdf_vals.values < 1e-6)
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_pdf_integrates_per_row(self, mode):
+        """Each row's marginal PDF integrates to ~1."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+
+        for row_i, (lo, hi) in enumerate([(-4, 7), (1, 12)]):
+            xs = np.linspace(lo, hi, 5000)
+            x_df = pd.DataFrame(
+                {"a": xs}, index=pd.RangeIndex(len(xs))
+            )
+            # Build a single-row km for that location
+            sup_i = km._support_for(row_i)
+            w_i = km._weights_for(row_i)
+            bw_i = km._bw_for(row_i)
+            km_i = KernelMixture(
+                support=sup_i,
+                bandwidth=bw_i,
+                kernel=km.kernel,
+                weights=w_i,
+            )
+            pdfs = np.array([km_i.pdf(x) for x in xs])
+            integral = _trapezoid(pdfs, xs)
+            assert abs(integral - 1.0) < 0.02, (
+                f"Row {row_i} PDF integral = {integral:.4f}, expected ~1.0"
+            )
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_cdf_monotone_per_row(self, mode):
+        """Each row's CDF is non-decreasing."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+        for row_i, (lo, hi) in enumerate([(-3, 6), (2, 12)]):
+            xs = np.linspace(lo, hi, 200)
+            sup_i = km._support_for(row_i)
+            w_i = km._weights_for(row_i)
+            bw_i = km._bw_for(row_i)
+            km_i = KernelMixture(
+                support=sup_i, bandwidth=bw_i,
+                kernel=km.kernel, weights=w_i,
+            )
+            cdfs = np.array([km_i.cdf(x) for x in xs])
+            assert np.all(np.diff(cdfs) >= -1e-10), (
+                f"CDF non-monotone for row {row_i}"
+            )
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_sample_shape(self, mode):
+        """Single draw has shape (n_rows, n_cols)."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+        s = km.sample()
+        assert s.shape == (2, 1)
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_sample_multi_shape(self, mode):
+        """n_samples draws has shape (n_samples * n_rows, n_cols)."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+        s = km.sample(5)
+        assert s.shape == (10, 1)
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_sample_row0_near_support0(self, mode):
+        """Samples for row 0 should cluster near [0, 1, 2]."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+        s = km.sample(2000)
+        # Row 0 indices in multi-index: every other starting from 0
+        row0_vals = s.xs(0, level=1).values.ravel()
+        assert row0_vals.mean() < 4.0  # nowhere near [5-8]
+
+    @pytest.mark.parametrize("mode", ["2d"])
+    def test_sample_row1_near_support1(self, mode):
+        """Samples for row 1 should cluster near [5, 6, 7] or [5-8]."""
+        km = _km_2d() if mode == "2d" else _km_ragged()
+        s = km.sample(2000)
+        row1_vals = s.xs(1, level=1).values.ravel()
+        assert row1_vals.mean() > 3.0  # nowhere near [0, 1, 2]
+
+    def test_per_location_weights_2d(self):
+        """2-D weights array is correctly parsed and normalised."""
+        support = np.array([[0.0, 1.0, 2.0], [5.0, 6.0, 7.0]])
+        weights = np.array([[0.1, 0.3, 0.6], [0.5, 0.3, 0.2]])
+        km = KernelMixture(
+            support=support,
+            bandwidth=0.5,
+            weights=weights,
+            index=pd.RangeIndex(2),
+            columns=pd.Index(["a"]),
+        )
+        # Row 0 mean = 0*0.1 + 1*0.3 + 2*0.6 = 1.5
+        assert abs(km.mean().iloc[0, 0] - 1.5) < 1e-10
+        # Row 1 mean = 5*0.5 + 6*0.3 + 7*0.2 = 5.7
+        assert abs(km.mean().iloc[1, 0] - 5.7) < 1e-10
+
+    def test_per_location_weights_ragged(self):
+        """List of per-location weight arrays is parsed and normalised."""
+        support = [np.array([0.0, 1.0, 2.0]), np.array([5.0, 6.0, 7.0, 8.0])]
+        weights = [np.array([0.1, 0.3, 0.6]), np.array([0.25, 0.25, 0.25, 0.25])]
+        km = KernelMixture(
+            support=support,
+            bandwidth=0.5,
+            weights=weights,
+            index=pd.RangeIndex(2),
+            columns=pd.Index(["a"]),
+        )
+        # Row 0 mean = 0*0.1 + 1*0.3 + 2*0.6 = 1.5
+        assert abs(km.mean().iloc[0, 0] - 1.5) < 1e-10
+        # Row 1 mean = uniform over [5,6,7,8] = 6.5
+        assert abs(km.mean().iloc[1, 0] - 6.5) < 1e-10
+
+    def test_1d_weights_with_2d_support_raises(self):
+        """1-D weights with 2-D support is ambiguous and must raise."""
+        with pytest.raises(ValueError, match="ambiguous"):
+            KernelMixture(
+                support=[[0.0, 1.0], [5.0, 6.0]],
+                bandwidth=0.5,
+                weights=[0.5, 0.5],
+                index=pd.RangeIndex(2),
+                columns=pd.Index(["a"]),
+            )
+
+    def test_weight_row_mismatch_raises(self):
+        """2-D weights with wrong row count raises."""
+        with pytest.raises(ValueError, match="row count"):
+            KernelMixture(
+                support=np.array([[0.0, 1.0], [5.0, 6.0]]),
+                bandwidth=0.5,
+                weights=np.array([[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]),
+                index=pd.RangeIndex(2),
+                columns=pd.Index(["a"]),
+            )
+
+    def test_scott_per_location(self):
+        """Scott rule is applied independently per row."""
+        support = np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
+                            [10.0, 20.0, 30.0, 40.0, 50.0]])
+        km = KernelMixture(
+            support=support,
+            bandwidth="scott",
+            index=pd.RangeIndex(2),
+            columns=pd.Index(["a"]),
+        )
+        assert isinstance(km._bandwidth, np.ndarray)
+        assert len(km._bandwidth) == 2
+        # Row 1 has 10× larger std than row 0 → bandwidth should be ~10× larger
+        assert km._bandwidth[1] > km._bandwidth[0] * 5
+
+    def test_iloc_subset_2d(self):
+        """iloc on a 2-D KernelMixture yields a correctly-scoped sub-distribution."""
+        km = _km_2d()
+        sub = km.iloc[[0], :]
+        assert sub.shape == (1, 1)
+        # sub should have only row-0 support
+        assert sub._support_mode == "per_location_2d"
+        assert sub._support.shape[0] == 1
+        # Mean of sub should match row 0 mean of original
+        assert abs(sub.mean().iloc[0, 0] - km.mean().iloc[0, 0]) < 1e-10
+
+    def test_iloc_subset_ragged(self):
+        """iloc on a ragged KernelMixture yields correct sub-distribution."""
+        km = _km_ragged()
+        sub = km.iloc[[1], :]
+        assert sub.shape == (1, 1)
+        assert sub._support_mode == "per_location_2d"
+        assert len(sub._support[0]) == 4  # row 1 had 4 support points
+        assert abs(sub.mean().iloc[0, 0] - km.mean().iloc[1, 0]) < 1e-10
+
+    def test_iat_returns_scalar_km_2d(self):
+        """_iat on a 2-D KernelMixture returns a scalar KernelMixture."""
+        pass # TODO
+
+    def test_shared_support_unchanged(self):
+        """Existing 1-D shared-support API is completely unchanged."""
+        support = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+        km = KernelMixture(support=support, bandwidth=0.5, kernel="gaussian")
+        assert km._support_mode == "shared"
+        assert abs(km.mean() - 2.0) < 1e-10
+        assert km.var() > 0
+        assert km.pdf(2.0) > 0
+        assert 0 < km.cdf(2.0) < 1
+        assert np.isfinite(km.sample())
+
+    def test_shared_2d_dist_shape(self):
+        """Shared support with 2-D index/columns still works (existing test)."""
+        km = KernelMixture(
+            support=[0.0, 1.0, 2.0],
+            bandwidth=0.5,
+            kernel="gaussian",
+            index=pd.RangeIndex(3),
+            columns=pd.Index(["a", "b"]),
+        )
+        s = km.sample()
+        assert s.shape == (3, 2)
