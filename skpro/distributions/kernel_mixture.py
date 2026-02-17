@@ -723,15 +723,80 @@ class KernelMixture(BaseDistribution):
 
     def _sample(self, n_samples=None):
         """Sample from the distribution."""
-        raise NotImplementedError("TODO")
+        if self._support_mode == "shared":
+            return self._sample_shared(n_samples)
+        return self._sample_per_location(n_samples)
 
     def _iloc(self, rowidx=None, colidx=None):
         """Subset distribution by integer row/column indices."""
-        raise NotImplementedError("TODO")
+        from skpro.distributions.base._base import is_scalar_notnone
+
+        if is_scalar_notnone(rowidx) and is_scalar_notnone(colidx):
+            return self._iat(rowidx, colidx)
+        if is_scalar_notnone(rowidx):
+            rowidx = pd.Index([rowidx])
+        if is_scalar_notnone(colidx):
+            colidx = pd.Index([colidx])
+
+        index = self.index
+        columns = self.columns
+        index_subset = index.take(rowidx) if rowidx is not None else index
+        columns_subset = (
+            columns.take(colidx) if colidx is not None else columns
+        )
+
+        # For per-location modes, slice the support/weights along rows
+        if self._support_mode == "shared" or rowidx is None:
+            sub_support = self.support
+            sub_weights = self.weights
+        elif self._support_mode == "per_location_2d":
+            row_positions = (
+                rowidx
+                if isinstance(rowidx, (list, np.ndarray))
+                else list(rowidx)
+            )
+            sub_support = self._support[row_positions]  # 2-D slice
+            sub_weights = (
+                [self._weights[i] for i in row_positions]
+                if isinstance(self._weights, list)
+                else self._weights[row_positions]
+            )
+        else:  # ragged
+            row_positions = (
+                rowidx
+                if isinstance(rowidx, (list, np.ndarray))
+                else list(rowidx)
+            )
+            sub_support = [self._support[i] for i in row_positions]
+            sub_weights = [self._weights[i] for i in row_positions]
+
+        return KernelMixture(
+            support=sub_support,
+            bandwidth=self.bandwidth,
+            kernel=self.kernel,
+            weights=sub_weights,
+            random_state=self.random_state,
+            index=index_subset,
+            columns=columns_subset,
+        )
 
     def _iat(self, rowidx=None, colidx=None):
         """Subset distribution to a single scalar element."""
-        raise NotImplementedError("TODO")
+        if self._support_mode == "shared":
+            sub_support = self.support
+            sub_weights = self.weights
+        else:
+            sub_support = self._support_for(rowidx)
+            sub_weights = self._weights_for(rowidx)
+        return KernelMixture(
+            support=sub_support,
+            bandwidth=self.bandwidth,
+            kernel=self.kernel,
+            weights=sub_weights,
+            random_state=self.random_state,
+        )
+
+    @classmethod
     def get_test_params(cls, parameter_set="default"):
         """Return testing parameter settings for the estimator."""
         params1 = {
