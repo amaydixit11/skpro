@@ -19,8 +19,11 @@ class SGDProbaRegressor(BaseProbaRegressor, OnlineRegressorMixin):
         return self
 
     def _update(self, X, y, C=None):
-        X_val = X.values if hasattr(X, 'values') else X
-        y_val = y.values if hasattr(y, 'values') else y
+        X_val = X.values if hasattr(X, "values") else X
+        y_val = y.values if hasattr(y, "values") else y
+        # Flatten y to 1D — reject multioutput targets
+        if len(getattr(y, "shape", (1,))) > 1:
+            y_val = y_val.ravel()
         for xi, yi in zip(X_val, y_val):
             pred = xi @ self.w_
             err = yi - pred

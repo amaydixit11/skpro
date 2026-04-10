@@ -28,17 +28,42 @@ class SlidingWindowRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         self.estimator_ = clone(self.estimator)
         self._buffer_X = None
         self._buffer_y = None
+        self._buffer_C = None
 
     def _fit(self, X, y, C=None):
-        self._buffer_X = X.copy()
-        self._buffer_y = y.copy()
-        self.estimator_.fit(X, y)
+        # Trim initial fit to window_size — ensures sliding window behavior
+        # is consistent from the start
+        self._buffer_X = X.copy().tail(self.window_size)
+        self._buffer_y = y.copy().tail(self.window_size)
+        self._buffer_C = C.copy().tail(self.window_size) if C is not None else None
+        if C is not None and self.estimator_.get_tag("capability:survival"):
+            self.estimator_.fit(self._buffer_X, self._buffer_y, C=self._buffer_C)
+        else:
+            self.estimator_.fit(self._buffer_X, self._buffer_y)
         return self
 
     def _update(self, X, y, C=None):
-        self._buffer_X = pd.concat([self._buffer_X, X], ignore_index=True).tail(self.window_size)
-        self._buffer_y = pd.concat([self._buffer_y, y], ignore_index=True).tail(self.window_size)
-        self.estimator_.fit(self._buffer_X, self._buffer_y)
+        self._buffer_X = pd.concat([self._buffer_X, X], ignore_index=True).tail(
+            self.window_size
+        )
+        self._buffer_y = pd.concat([self._buffer_y, y], ignore_index=True).tail(
+            self.window_size
+        )
+        if C is not None:
+            self._buffer_C = (
+                pd.concat([self._buffer_C, C], ignore_index=True).tail(self.window_size)
+                if self._buffer_C is not None
+                else C.tail(self.window_size)
+            )
+
+        if (
+            C is not None
+            and self._buffer_C is not None
+            and self.estimator_.get_tag("capability:survival")
+        ):
+            self.estimator_.fit(self._buffer_X, self._buffer_y, C=self._buffer_C)
+        else:
+            self.estimator_.fit(self._buffer_X, self._buffer_y)
         return self
 
     @classmethod
@@ -86,8 +111,11 @@ class ForgettingFactorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         self._weights = np.ones(len(X))
         self._buffer_X = X.copy()
         self._buffer_y = y.copy()
+        self._buffer_C = C.copy() if C is not None else None
         if self._supports_sample_weight():
             self.estimator_.fit(X, y, sample_weight=self._weights)
+        elif C is not None and self.estimator_.get_tag("capability:survival"):
+            self.estimator_.fit(X, y, C=C)
         else:
             self.estimator_.fit(X, y)
         return self
@@ -103,8 +131,31 @@ class ForgettingFactorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         new_weights = np.ones(len(X))
         self._weights = np.concatenate([self._weights, new_weights])
 
+        if C is not None:
+            self._buffer_C = (
+                pd.concat([self._buffer_C, C], ignore_index=True)
+                if self._buffer_C is not None
+                else C
+            )
+
         if self._supports_sample_weight():
-            self.estimator_.fit(self._buffer_X, self._buffer_y, sample_weight=self._weights)
+            if (
+                C is not None
+                and self._buffer_C is not None
+                and self.estimator_.get_tag("capability:survival")
+            ):
+                self.estimator_.fit(
+                    self._buffer_X,
+                    self._buffer_y,
+                    C=self._buffer_C,
+                    sample_weight=self._weights,
+                )
+            else:
+                self.estimator_.fit(
+                    self._buffer_X, self._buffer_y, sample_weight=self._weights
+                )
+        elif C is not None and self.estimator_.get_tag("capability:survival"):
+            self.estimator_.fit(self._buffer_X, self._buffer_y, C=self._buffer_C)
         else:
             self.estimator_.fit(self._buffer_X, self._buffer_y)
 
@@ -158,17 +209,32 @@ class DriftDetectorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         self._error_buffer = []
         self._buffer_X = pd.DataFrame()
         self._buffer_y = pd.DataFrame()
+        self._buffer_C = None
 
     def _fit(self, X, y, C=None):
         self._buffer_X = X.copy()
         self._buffer_y = y.copy()
-        self.estimator_.fit(X, y)
+        self._buffer_C = C.copy() if C is not None else None
+        if C is not None and self.estimator_.get_tag("capability:survival"):
+            self.estimator_.fit(X, y, C=C)
+        else:
+            self.estimator_.fit(X, y)
         return self
 
     def _update(self, X, y, C=None):
         # Update data buffer (capped at window_size)
-        self._buffer_X = pd.concat([self._buffer_X, X], ignore_index=True).tail(self.window_size)
-        self._buffer_y = pd.concat([self._buffer_y, y], ignore_index=True).tail(self.window_size)
+        self._buffer_X = pd.concat([self._buffer_X, X], ignore_index=True).tail(
+            self.window_size
+        )
+        self._buffer_y = pd.concat([self._buffer_y, y], ignore_index=True).tail(
+            self.window_size
+        )
+        if C is not None:
+            self._buffer_C = (
+                pd.concat([self._buffer_C, C], ignore_index=True).tail(self.window_size)
+                if self._buffer_C is not None
+                else C.tail(self.window_size)
+            )
 
         # Monitor prediction error
         preds = self.predict(X)
@@ -177,22 +243,52 @@ class DriftDetectorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
 
         # Keep error buffer at window_size
         if len(self._error_buffer) > self.window_size:
-            self._error_buffer = self._error_buffer[-self.window_size:]
+            self._error_buffer = self._error_buffer[-self.window_size :]
 
-        # Trigger reset if average error exceeds threshold
+        # Check for drift and act accordingly
         if len(self._error_buffer) == self.window_size:
             avg_error = np.mean(self._error_buffer)
             if avg_error > self.threshold:
                 # Drift detected: reset and refit on recent window
                 self.estimator_ = clone(self.estimator)
-                self.estimator_.fit(self._buffer_X, self._buffer_y)
+                if (
+                    self._buffer_C is not None
+                    and self.estimator_.get_tag("capability:survival")
+                ):
+                    self.estimator_.fit(
+                        self._buffer_X, self._buffer_y, C=self._buffer_C
+                    )
+                else:
+                    self.estimator_.fit(self._buffer_X, self._buffer_y)
                 self._error_buffer = []
+            else:
+                # No drift: still update the estimator with new data
+                if self.estimator_.get_tag("capability:update"):
+                    self.estimator_.update(X, y)
+                else:
+                    if (
+                        self._buffer_C is not None
+                        and self.estimator_.get_tag("capability:survival")
+                    ):
+                        self.estimator_.fit(
+                            self._buffer_X, self._buffer_y, C=self._buffer_C
+                        )
+                    else:
+                        self.estimator_.fit(self._buffer_X, self._buffer_y)
         else:
-            # Normal update: use update if available, otherwise refit on window
+            # Buffer not full yet: normal update
             if self.estimator_.get_tag("capability:update"):
                 self.estimator_.update(X, y)
             else:
-                self.estimator_.fit(self._buffer_X, self._buffer_y)
+                if (
+                    self._buffer_C is not None
+                    and self.estimator_.get_tag("capability:survival")
+                ):
+                    self.estimator_.fit(
+                        self._buffer_X, self._buffer_y, C=self._buffer_C
+                    )
+                else:
+                    self.estimator_.fit(self._buffer_X, self._buffer_y)
 
         return self
 

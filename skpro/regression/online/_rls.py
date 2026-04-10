@@ -20,8 +20,11 @@ class RLSProbaRegressor(BaseProbaRegressor, OnlineRegressorMixin):
         return self
 
     def _update(self, X, y, C=None):
-        X_val = X.values if hasattr(X, 'values') else X
-        y_val = y.values if hasattr(y, 'values') else y
+        X_val = X.values if hasattr(X, "values") else X
+        y_val = y.values if hasattr(y, "values") else y
+        # Flatten y to 1D — reject multioutput targets
+        if len(getattr(y, "shape", (1,))) > 1:
+            y_val = y_val.ravel()
         lam = self.forgetting_factor
 
         for xi, yi in zip(X_val, y_val):
@@ -31,7 +34,7 @@ class RLSProbaRegressor(BaseProbaRegressor, OnlineRegressorMixin):
             k = (self.P_ @ x) / denom
             # Update weights
             self.w_ += (k * (yi - xi @ self.w_)).flatten()
-            # Update P matrix: P = (P - k x P) / lam
+            # Update P matrix: P = (P - k x^T P) / lam
             self.P_ = (self.P_ - k @ (x.T @ self.P_)) / lam
         return self
 
