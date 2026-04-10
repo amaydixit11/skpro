@@ -4,5 +4,6 @@
 from skpro.regression.online._dont_refit import OnlineDontRefit
 from skpro.regression.online._refit import OnlineRefit
 from skpro.regression.online._refit_every import OnlineRefitEveryN
+from skpro.regression.online._sgd import SGDProbaRegressor
 
-__all__ = ["OnlineDontRefit", "OnlineRefit", "OnlineRefitEveryN"]
+__all__ = ["OnlineDontRefit", "OnlineRefit", "OnlineRefitEveryN", "SGDProbaRegressor"]
