@@ -1,10 +1,9 @@
-"""Meta-algorithms to build online regression models."""
-# copyright: skpro developers, BSD-3-Clause License (see LICENSE file)
+from ._sgd import SGDProbaRegressor
+from ._rls import RLSProbaRegressor
+from ._compositors import SlidingWindowRegressor
 
-from skpro.regression.online._dont_refit import OnlineDontRefit
-from skpro.regression.online._refit import OnlineRefit
-from skpro.regression.online._refit_every import OnlineRefitEveryN
-from skpro.regression.online._sgd import SGDProbaRegressor
-from skpro.regression.online._rls import RLSProbaRegressor
-
-__all__ = ["OnlineDontRefit", "OnlineRefit", "OnlineRefitEveryN", "SGDProbaRegressor", "RLSProbaRegressor"]
+__all__ = [
+    "SGDProbaRegressor",
+    "RLSProbaRegressor",
+    "SlidingWindowRegressor",
+]
