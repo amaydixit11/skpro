@@ -32,3 +32,22 @@ class SGDProbaRegressor(BaseProbaRegressor, OnlineRegressorMixin):
         X_val = X.values if hasattr(X, 'values') else X
         means = X_val @ self.w_
         return Normal(mu=means, sigma=np.sqrt(self.var_))
+
+    @classmethod
+    def get_test_params(cls, parameter_set="default"):
+        """Return testing parameter settings for the estimator.
+
+        Parameters
+        ----------
+        parameter_set : str, default="default"
+            Name of the set of test parameters to return.
+
+        Returns
+        -------
+        params : dict or list of dict, default = {}
+            Parameters to create testing instances of the class.
+        """
+        return [
+            {"learning_rate": 0.01},
+            {"learning_rate": 0.001, "alpha": 0.05},
+        ]

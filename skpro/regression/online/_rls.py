@@ -38,8 +38,26 @@ class RLSProbaRegressor(BaseProbaRegressor, OnlineRegressorMixin):
     def _predict_proba(self, X):
         X_val = X.values if hasattr(X, 'values') else X
         means = X_val @ self.w_
-        # Variance = x P x^T + noise_var
-        # For efficiency, we can use a constant or compute per-row
-        # Simple version: use average P diag + noise
-        var = np.diag(self.P_).mean() + self.noise_var
-        return Normal(mu=means, sigma=np.sqrt(var))
+        # Per-row predictive variance: x^T P x + noise_var
+        # This captures both parameter uncertainty and observation noise
+        var_per_row = np.sum(X_val @ self.P_ * X_val, axis=1) + self.noise_var
+        return Normal(mu=means, sigma=np.sqrt(var_per_row))
+
+    @classmethod
+    def get_test_params(cls, parameter_set="default"):
+        """Return testing parameter settings for the estimator.
+
+        Parameters
+        ----------
+        parameter_set : str, default="default"
+            Name of the set of test parameters to return.
+
+        Returns
+        -------
+        params : dict or list of dict, default = {}
+            Parameters to create testing instances of the class.
+        """
+        return [
+            {"forgetting_factor": 1.0, "noise_var": 1.0},
+            {"forgetting_factor": 0.95, "noise_var": 0.1},
+        ]

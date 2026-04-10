@@ -3,7 +3,22 @@ import numpy as np
 from sklearn.base import clone
 from skpro.regression.base import _DelegatedProbaRegressor, OnlineRegressorMixin
 
+
 class SlidingWindowRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
+    """Compositor that refits the wrapped estimator on a rolling window of recent data.
+
+    Maintains a buffer of the most recent ``window_size`` observations.
+    On each ``update``, the buffer is updated and the wrapped estimator
+    is refit on the buffered data.
+
+    Parameters
+    ----------
+    estimator : BaseProbaRegressor
+        The regressor to wrap and refit.
+    window_size : int, default=100
+        Number of recent observations to retain.
+    """
+
     _tags = {"capability:update": True}
 
     def __init__(self, estimator, window_size=100):
@@ -21,14 +36,43 @@ class SlidingWindowRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         return self
 
     def _update(self, X, y, C=None):
-        # Update buffer
         self._buffer_X = pd.concat([self._buffer_X, X], ignore_index=True).tail(self.window_size)
         self._buffer_y = pd.concat([self._buffer_y, y], ignore_index=True).tail(self.window_size)
-        # Refit estimator on the current window
         self.estimator_.fit(self._buffer_X, self._buffer_y)
         return self
 
+    @classmethod
+    def get_test_params(cls, parameter_set="default"):
+        """Return testing parameter settings for the estimator."""
+        from sklearn.linear_model import Ridge
+
+        from skpro.regression.residual import ResidualDouble
+
+        regressor = ResidualDouble(Ridge())
+        return [
+            {"estimator": regressor, "window_size": 20},
+            {"estimator": regressor, "window_size": 10},
+        ]
+
+
 class ForgettingFactorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
+    """Compositor that applies exponential forgetting to observation weights.
+
+    Maintains all data seen so far but assigns exponentially decaying weights
+    to older observations. On each ``update``, old weights are multiplied
+    by ``forgetting_factor`` and new observations receive weight 1.0.
+    The wrapped estimator is refit with ``sample_weight`` if supported.
+
+    Parameters
+    ----------
+    estimator : BaseProbaRegressor
+        The regressor to wrap. Must support ``sample_weight`` in ``fit``
+        for the forgetting mechanism to be effective.
+    forgetting_factor : float in (0, 1], default=0.99
+        Decay factor applied to existing weights on each update.
+        Closer to 1 means slower forgetting.
+    """
+
     _tags = {"capability:update": True}
 
     def __init__(self, estimator, forgetting_factor=0.99):
@@ -39,12 +83,10 @@ class ForgettingFactorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         self._weights = None
 
     def _fit(self, X, y, C=None):
-        # Initialize weights to 1
         self._weights = np.ones(len(X))
-        # Use getattr to safely check for sample_weight support without triggering ValueError from get_tag
-        # Check if 'sample_weight' is in the fit method's arguments
-        fit_code = getattr(self.estimator_.fit, "__code__", None)
-        if fit_code and "sample_weight" in fit_code.co_varnames:
+        self._buffer_X = X.copy()
+        self._buffer_y = y.copy()
+        if self._supports_sample_weight():
             self.estimator_.fit(X, y, sample_weight=self._weights)
         else:
             self.estimator_.fit(X, y)
@@ -55,46 +97,56 @@ class ForgettingFactorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         if self._weights is not None:
             self._weights *= self.forgetting_factor
 
-        # New observations have weight 1
-        new_weights = np.ones(len(X))
-
-        # Combine old and new data
-        # Note: ForgettingFactorRegressor typically maintains all data but decays weights.
-        # To avoid memory leak, we might need to prune very small weights, but for now we follow the plan.
-        # However, _DelegatedProbaRegressor's fit/update typically expects to call fit on the underlying estimator.
-
-        # We need to store the data to apply weights during fit.
-        if not hasattr(self, "_buffer_X"):
-            self._buffer_X = pd.DataFrame()
-            self._buffer_y = pd.DataFrame()
-
+        # Store new data with weight 1
         self._buffer_X = pd.concat([self._buffer_X, X], ignore_index=True)
         self._buffer_y = pd.concat([self._buffer_y, y], ignore_index=True)
+        new_weights = np.ones(len(X))
+        self._weights = np.concatenate([self._weights, new_weights])
 
-        # Update weight vector
-        if self._weights is not None:
-            self._weights = np.concatenate([self._weights, new_weights])
-        else:
-            self._weights = new_weights
-
-        # Apply forgetting factor to ALL weights except the most recent ones
-        # (Actually, the decay should happen at every update step)
-        # The weights were already decayed at the start of _update, but that was only for old weights.
-        # We need to make sure the new weights are 1.0 and old ones are decayed.
-        # The current logic:
-        # 1. old_weights *= factor
-        # 2. total_weights = [old_weights, ones(len(X))]
-        # This is correct.
-
-        if self.estimator_.get_tag("capability:sample_weight") or "sample_weight" in self.estimator_.fit.__code__.co_varnames:
+        if self._supports_sample_weight():
             self.estimator_.fit(self._buffer_X, self._buffer_y, sample_weight=self._weights)
         else:
-            # Fallback: just fit without weights if not supported
             self.estimator_.fit(self._buffer_X, self._buffer_y)
 
         return self
 
+    def _supports_sample_weight(self):
+        """Check if the wrapped estimator supports sample_weight in fit."""
+        fit_code = getattr(self.estimator_.fit, "__code__", None)
+        return fit_code is not None and "sample_weight" in fit_code.co_varnames
+
+    @classmethod
+    def get_test_params(cls, parameter_set="default"):
+        """Return testing parameter settings for the estimator."""
+        from sklearn.linear_model import Ridge
+
+        from skpro.regression.residual import ResidualDouble
+
+        regressor = ResidualDouble(Ridge())
+        return [
+            {"estimator": regressor, "forgetting_factor": 0.99},
+            {"estimator": regressor, "forgetting_factor": 0.9},
+        ]
+
+
 class DriftDetectorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
+    """Compositor that monitors prediction error and resets on drift.
+
+    Maintains a rolling buffer of recent prediction errors. When the
+    average error over the buffer exceeds ``threshold``, the wrapped
+    estimator is reset and refit on a recent window of data.
+
+    Parameters
+    ----------
+    estimator : BaseProbaRegressor
+        The regressor to wrap and monitor.
+    threshold : float, default=0.1
+        Error threshold above which drift is triggered.
+        Should be set relative to the scale of the target variable.
+    window_size : int, default=50
+        Size of the rolling error buffer and data window for refit.
+    """
+
     _tags = {"capability:update": True}
 
     def __init__(self, estimator, threshold=0.1, window_size=50):
@@ -114,7 +166,7 @@ class DriftDetectorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         return self
 
     def _update(self, X, y, C=None):
-        # Update data buffer
+        # Update data buffer (capped at window_size)
         self._buffer_X = pd.concat([self._buffer_X, X], ignore_index=True).tail(self.window_size)
         self._buffer_y = pd.concat([self._buffer_y, y], ignore_index=True).tail(self.window_size)
 
@@ -131,16 +183,28 @@ class DriftDetectorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         if len(self._error_buffer) == self.window_size:
             avg_error = np.mean(self._error_buffer)
             if avg_error > self.threshold:
-                # Drift detected! Reset and refit on the last window of data
+                # Drift detected: reset and refit on recent window
                 self.estimator_ = clone(self.estimator)
                 self.estimator_.fit(self._buffer_X, self._buffer_y)
-                self._error_buffer = [] # Reset error buffer after drift detection
-
-        # Regular update: use update if available, otherwise fit (though fit on small batch is bad)
-        if self.estimator_.get_tag("capability:update"):
-            self.estimator_.update(X, y)
+                self._error_buffer = []
         else:
-            # If it's a batch estimator, we refit on the window
-            self.estimator_.fit(self._buffer_X, self._buffer_y)
+            # Normal update: use update if available, otherwise refit on window
+            if self.estimator_.get_tag("capability:update"):
+                self.estimator_.update(X, y)
+            else:
+                self.estimator_.fit(self._buffer_X, self._buffer_y)
 
         return self
+
+    @classmethod
+    def get_test_params(cls, parameter_set="default"):
+        """Return testing parameter settings for the estimator."""
+        from sklearn.linear_model import Ridge
+
+        from skpro.regression.residual import ResidualDouble
+
+        regressor = ResidualDouble(Ridge())
+        return [
+            {"estimator": regressor, "threshold": 1.0, "window_size": 20},
+            {"estimator": regressor, "threshold": 0.5, "window_size": 10},
+        ]
