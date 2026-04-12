@@ -9,10 +9,14 @@ class OnlineRegressorMixin:
         if not self.get_tag("capability:update"):
             return self
 
-        # Basic validation (simplified, assuming BaseProbaRegressor context)
-        # In real impl, use self._check_X_y
-        self._update(X, y, C)
-        return self
+        # Route through the same validation path as fit()
+        check_ret = self._check_X_y(X, y, C, return_metadata=True)
+        X_inner = check_ret["X_inner"]
+        y_inner = check_ret["y_inner"]
+        if self.get_tag("capability:survival"):
+            C_inner = check_ret["C_inner"]
+            return self._update(X_inner, y_inner, C=C_inner)
+        return self._update(X_inner, y_inner)
 
     def update_predict(self, X, y, C=None):
         """Prequential predict-then-update."""

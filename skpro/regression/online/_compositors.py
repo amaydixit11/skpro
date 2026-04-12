@@ -4,7 +4,7 @@ from sklearn.base import clone
 from skpro.regression.base import _DelegatedProbaRegressor, OnlineRegressorMixin
 
 
-class SlidingWindowRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
+class SlidingWindowRegressor(OnlineRegressorMixin, _DelegatedProbaRegressor):
     """Compositor that refits the wrapped estimator on a rolling window of recent data.
 
     Maintains a buffer of the most recent ``window_size`` observations.
@@ -80,7 +80,7 @@ class SlidingWindowRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         ]
 
 
-class ForgettingFactorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
+class ForgettingFactorRegressor(OnlineRegressorMixin, _DelegatedProbaRegressor):
     """Compositor that applies exponential forgetting to observation weights.
 
     Maintains all data seen so far but assigns exponentially decaying weights
@@ -180,7 +180,7 @@ class ForgettingFactorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
         ]
 
 
-class DriftDetectorRegressor(_DelegatedProbaRegressor, OnlineRegressorMixin):
+class DriftDetectorRegressor(OnlineRegressorMixin, _DelegatedProbaRegressor):
     """Compositor that monitors prediction error and resets on drift.
 
     Maintains a rolling buffer of recent prediction errors. When the

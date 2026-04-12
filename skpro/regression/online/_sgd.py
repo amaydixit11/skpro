@@ -4,7 +4,7 @@ from skpro.regression.base import BaseProbaRegressor
 from skpro.regression.base import OnlineRegressorMixin
 from skpro.distributions.normal import Normal
 
-class SGDProbaRegressor(BaseProbaRegressor, OnlineRegressorMixin):
+class SGDProbaRegressor(OnlineRegressorMixin, BaseProbaRegressor):
     _tags = {"capability:update": True}
 
     def __init__(self, learning_rate=0.01, alpha=0.1):
@@ -19,10 +19,11 @@ class SGDProbaRegressor(BaseProbaRegressor, OnlineRegressorMixin):
         return self
 
     def _update(self, X, y, C=None):
-        X_val = X.values if hasattr(X, "values") else X
-        y_val = y.values if hasattr(y, "values") else y
-        # Flatten y to 1D — reject multioutput targets
-        if len(getattr(y, "shape", (1,))) > 1:
+        # Input already validated/normalized by update() via _check_X_y
+        X_val = X.values if hasattr(X, "values") else np.asarray(X)
+        y_val = y.values if hasattr(y, "values") else np.asarray(y)
+        # Ensure 1D
+        if y_val.ndim > 1:
             y_val = y_val.ravel()
         for xi, yi in zip(X_val, y_val):
             pred = xi @ self.w_

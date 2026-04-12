@@ -4,7 +4,7 @@ from skpro.regression.base import BaseProbaRegressor
 from skpro.regression.base import OnlineRegressorMixin
 from skpro.distributions.normal import Normal
 
-class RLSProbaRegressor(BaseProbaRegressor, OnlineRegressorMixin):
+class RLSProbaRegressor(OnlineRegressorMixin, BaseProbaRegressor):
     _tags = {"capability:update": True}
 
     def __init__(self, forgetting_factor=1.0, noise_var=1.0):
@@ -20,10 +20,11 @@ class RLSProbaRegressor(BaseProbaRegressor, OnlineRegressorMixin):
         return self
 
     def _update(self, X, y, C=None):
-        X_val = X.values if hasattr(X, "values") else X
-        y_val = y.values if hasattr(y, "values") else y
-        # Flatten y to 1D — reject multioutput targets
-        if len(getattr(y, "shape", (1,))) > 1:
+        # Input already validated/normalized by update() via _check_X_y
+        X_val = X.values if hasattr(X, "values") else np.asarray(X)
+        y_val = y.values if hasattr(y, "values") else np.asarray(y)
+        # Ensure 1D
+        if y_val.ndim > 1:
             y_val = y_val.ravel()
         lam = self.forgetting_factor
 
